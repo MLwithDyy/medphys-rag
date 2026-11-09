@@ -69,7 +69,7 @@ The first-pass faithfulness score was 0.70 (28/40), because the evidence shown t
 
 ## Data and licences
 
-Articles are open access under CC BY via Europe PMC; titles, DOIs and licences are listed in `data/sources.csv`, and passages shown by the app link back to the source article. `data/chunks.jsonl` contains passages from these articles under their original licence. Code: add your own licence.
+Articles are open access under CC BY via Europe PMC; titles, DOIs and licences are listed in `data/sources.csv`, and passages shown by the app link back to the source article. `data/chunks.jsonl` contains passages from these articles under their original licence. Code: MIT.
 
 ## Repository layout
 
