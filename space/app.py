@@ -12,7 +12,7 @@ from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
 from openai import OpenAI
 
-MODEL = os.environ.get("LLM_MODEL", "gemini-3.5-flash")
+MODEL = os.environ.get("LLM_MODEL", "gemini-3.5-flash-lite")   # set LLM_MODEL as a Space variable to change it
 BASE_URL = os.environ.get("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
 GATE, K, CAP = 0.78, 8, 3            # topic gate, chunks given to the LLM, max chunks per document
 PER_IP_HOUR, GLOBAL_DAY = 10, 300    # protect the free API quota
@@ -64,6 +64,19 @@ def allowed(ip):
     hits[ip].append(now); day["n"] += 1
     return True
 
+RPM_LIMIT = 12   # free tier allows 15 requests/minute for flash-lite; keep headroom
+recent = collections.deque()
+def rpm_ok():
+    now = time.time()
+    while recent and now - recent[0] > 60: recent.popleft()
+    if len(recent) >= RPM_LIMIT: return False
+    recent.append(now); return True
+
+CACHE = collections.OrderedDict()    # repeated questions (e.g. the built-in examples) cost no quota
+def cache_put(k, v):
+    CACHE[k] = v
+    while len(CACHE) > 200: CACHE.popitem(last=False)
+
 def sources_md(ids, cited):
     lines = []
     for n in cited:
@@ -76,6 +89,8 @@ def ask(question, user_key, request: gr.Request):
     q = (question or "").strip()
     if len(q) < 5: return "Tulis pertanyaan yang lebih lengkap.", ""
     if len(q) > 500: return "Pertanyaan maksimal 500 karakter.", ""
+    ck = re.sub(r"\s+", " ", q.lower())
+    if ck in CACHE: return CACHE[ck]
     ids, top = retrieve(q)
     if top < GATE:
         return "Pertanyaan ini tampaknya di luar topik fisika medis yang dicakup dokumen, jadi tidak dijawab.", ""
@@ -89,26 +104,38 @@ def ask(question, user_key, request: gr.Request):
             return "Kuota demo gratis sedang habis. Coba lagi nanti, atau isi kunci API Gemini milikmu di kolom di bawah.", ""
     ctx = "\n\n".join(f"[{n+1}] ({chunks[j]['title'][:90]} | {chunks[j]['section'][:50]})\n{chunks[j]['text']}"
                       for n, j in enumerate(ids))
-    try:
-        client = OpenAI(api_key=key or os.environ["GEMINI_API_KEY"], base_url=BASE_URL)
-        r = client.chat.completions.create(model=MODEL, max_tokens=3000, temperature=0, messages=[
-            {"role": "system", "content": SYS},
-            {"role": "user", "content": f"Context:\n{ctx}\n\nQuestion: {q}"}])
-        d = json.loads(re.search(r"\{.*\}", r.choices[0].message.content, re.S).group(0))
-    except Exception as e:
-        msg = str(e)
-        if "429" in msg or "quota" in msg.lower():
-            return "Kuota API sedang penuh. Coba lagi beberapa menit lagi.", ""
-        return "Terjadi kesalahan saat membuat jawaban. Coba lagi.", ""
+    if not key and not rpm_ok():
+        return "Demo sedang ramai. Coba lagi dalam satu menit.", ""
+    d = None
+    for attempt in range(2):
+        try:
+            client = OpenAI(api_key=key or os.environ["GEMINI_API_KEY"], base_url=BASE_URL)
+            r = client.chat.completions.create(model=MODEL, max_tokens=3000, temperature=0, messages=[
+                {"role": "system", "content": SYS},
+                {"role": "user", "content": f"Context:\n{ctx}\n\nQuestion: {q}"}])
+            d = json.loads(re.search(r"\{.*\}", r.choices[0].message.content, re.S).group(0))
+            break
+        except Exception as e:
+            msg = str(e)
+            if ("429" in msg or "quota" in msg.lower()) and attempt == 0:
+                time.sleep(6); continue          # per-minute limit usually clears in seconds
+            if "429" in msg or "quota" in msg.lower():
+                return "Kuota API sedang penuh. Coba lagi beberapa menit lagi.", ""
+            return "Terjadi kesalahan saat membuat jawaban. Coba lagi.", ""
     cited = [n for n in d.get("citations", []) if isinstance(n, int) and 1 <= n <= len(ids)]
     if not d.get("answerable"):
-        return "Dokumen yang tersedia tidak memuat jawaban untuk pertanyaan ini.", ""
-    return d.get("answer", ""), sources_md(ids, cited)
+        res = ("Dokumen yang tersedia tidak memuat jawaban untuk pertanyaan ini.", "")
+    else:
+        res = (d.get("answer", ""), sources_md(ids, cited))
+    cache_put(ck, res)
+    return res
 
 INTRO = """# MedPhys RAG
 Tanya jawab fisika medis dengan sitasi, dari 33 artikel open access (CC BY) di Europe PMC. Boleh bertanya dalam bahasa Indonesia atau Inggris.
 
 **Alat edukasi, bukan panduan klinis.** Jawaban hanya berasal dari dokumen yang diindeks, dan model menolak menjawab jika dokumen tidak memuatnya. Jangan memasukkan data pasien."""
+
+INTRO += f"\n\nModel pembuat jawaban: `{MODEL}` (Gemini API, tier gratis)."
 
 with gr.Blocks(title="MedPhys RAG") as demo:
     gr.Markdown(INTRO)

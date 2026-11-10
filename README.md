@@ -4,6 +4,8 @@ Question answering over 33 open-access medical physics papers, in English or Ind
 
 **[Live demo](https://huggingface.co/spaces/DyyFirm/medphys-rag)** (Hugging Face Space, free tier) · Educational use only. Not clinical guidance.
 
+![Demo](assets/demo.gif)
+
 ## What it does
 
 - Retrieves passages with hybrid search (multilingual dense embeddings + BM25).
@@ -39,13 +41,19 @@ The first-pass faithfulness score was 0.70 (28/40), because the evidence shown t
 
 **Where it falls short.** Of 10 answers that were not fully correct, 9 were partial and 1 wrong. Partial answers are mostly omissions on questions that ask for several items ("which two methods", "number and percentage"). By question type, fully correct: numeric 18/21, method 7/13, concept 4/4, comparison 1/2. English questions scored lower than Indonesian (12/20 vs 18/20), but 13 of the 20 English questions were of the method type and 19 of the 20 Indonesian ones were numeric, so language and type cannot be separated in this set. The two faithfulness failures were a range that belonged to a different review (misattribution) and a misspelled model name.
 
+## Deployment checks
+
+Smoke test on the live demo, run by me (`tests/demo_smoke_tests.csv`): 18/18 passed. It covers answerable questions in both languages, refusals for uncovered questions, an off-topic question that passes the topic gate and is then refused by the model, input-length handling, and a prompt asking the model to ignore its rules. Ten of these questions come from the evaluation set, so this checks that the deployment behaves like the notebook; it is not an accuracy measure.
+
+Also checked: the usage limit triggers for repeated distinct questions, and an invalid user-supplied API key returns a generic error without exposing details. Not tested: whether the per-visitor limit is isolated across different networks.
+
 ## How it works
 
 1. **Corpus:** 33 full-text articles from Europe PMC, filtered to CC BY licences (`data/sources.csv`).
 2. **Chunks:** the article XML is split by section into roughly 1,000-character passages (1,277 chunks). Tables and figure captions are not indexed.
 3. **Retrieval:** `intfloat/multilingual-e5-small` embeddings + BM25, fused with reciprocal rank fusion, at most 3 chunks per document, top 8 kept.
 4. **Topic gate:** questions whose best dense similarity is below 0.78 are rejected without an LLM call.
-5. **Answer:** `gemini-3.5-flash` through the free Gemini API returns JSON (answerable, answer, citations); the app shows the cited passages with links.
+5. **Answer:** `gemini-3.5-flash-lite` through the free Gemini API returns JSON (answerable, answer, citations); the app shows the cited passages with links. The same model was used for the evaluation below and in the live demo.
 
 ## Evaluation notes and caveats
 
@@ -60,12 +68,18 @@ The first-pass faithfulness score was 0.70 (28/40), because the evidence shown t
 - Small corpus and small test set.
 - Tables and captions are not indexed, so answers that live only there are missed.
 - Multi-item questions often get incomplete answers.
-- Free-tier API: the demo has per-visitor and daily limits, and the model or quota may change.
+- Free-tier API: the demo limits each visitor to 10 questions per hour and the service to 12 requests per minute and 300 per day on the shared key, caches repeated questions, and lets visitors use their own Gemini key. The model or quota may change at any time.
+- The per-visitor limit keys on the client address, which may be shared behind a proxy.
+- Single grader and one author wrote the questions; no second annotator.
+
+## What I would do next
+
+Index tables and captions, prompt for complete answers on multi-item questions, label gold chunks (not just documents) to measure chunk-level retrieval, add a second grader, and re-test on questions written after the pipeline was frozen.
 
 ## Run it
 
 - **Notebook:** `notebooks/medphys_rag.ipynb` (Colab) builds the corpus, index, answers and evaluation. Put your Gemini key in Colab Secrets as `GEMINI_API_KEY`; never commit keys.
-- **App:** `space/` holds the Gradio app deployed to the Hugging Face Space. It needs `GEMINI_API_KEY` as a Space secret.
+- **App:** `space/` holds the Gradio app deployed to the Hugging Face Space. It needs `GEMINI_API_KEY` as a Space secret, and the model can be changed with the `LLM_MODEL` variable. Free Gradio Spaces run on ZeroGPU, which refuses to start an app without a `@spaces.GPU` function, so `app.py` contains an unused one; the app itself runs on CPU.
 
 ## Data and licences
 
@@ -74,8 +88,10 @@ Articles are open access under CC BY via Europe PMC; titles, DOIs and licences a
 ## Repository layout
 
 ```
+assets/      demo.gif
 data/        sources.csv, chunks.jsonl, eval_questions.csv
 notebooks/   medphys_rag.ipynb
 results/     rag_outputs.jsonl, manual_review.csv
 space/       app.py, requirements.txt, chunks_filtered.jsonl, embeddings_e5small.npy
+tests/       demo_smoke_tests.csv
 ```
